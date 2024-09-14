@@ -4,7 +4,7 @@ speaker = "中文女"
 
 # 是否自定义音色
 
-new = 0
+customSpeak = 0
 
 # 语速
 
