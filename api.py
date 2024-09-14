@@ -6,7 +6,7 @@ sys.path.append('{}/third_party/AcademiCodec'.format(ROOT_DIR))
 sys.path.append('{}/third_party/Matcha-TTS'.format(ROOT_DIR))
 
 import numpy as np
-from flask import Flask, request, Response,send_from_directory
+from flask import Flask, request, Response
 import torch
 import torchaudio
 
@@ -20,9 +20,12 @@ from flask import make_response
 
 import json
 
-cosyvoice = CosyVoice('./pretrained_models/CosyVoice-300M')
+import shutil
+import logging
+import random
+import librosa
 
-default_voices = ['中文女', '中文男', '日语男', '粤语女', '英文女', '英文男', '韩语女']
+cosyvoice = CosyVoice('./pretrained_models/CosyVoice-300M')
 
 spk_new = []
 
@@ -66,13 +69,13 @@ def speed_change(input_audio: np.ndarray, speed: float, sr: int):
 
     return processed_audio
 
-@app.route("/", methods=['POST'])
+@app.route("/generate_audio", methods=['POST'])
 def sft_post():
     question_data = request.get_json()
 
     text = question_data.get('text')
     speaker = question_data.get('speaker')
-    new = question_data.get('new',0)
+    customSpeak = question_data.get('customSpeak',0)
     streaming = question_data.get('streaming',0)
 
     speed = request.args.get('speed',1.0)
@@ -89,7 +92,7 @@ def sft_post():
     if streaming == 0:
 
         start = time.process_time()
-        if not new:
+        if not customSpeak:
             output = cosyvoice.inference_sft(text,speaker,"无")
         else:
             output = cosyvoice.inference_sft(text,speaker,speaker)
@@ -118,7 +121,7 @@ def sft_post():
 
         spk_id = speaker
 
-        if new:
+        if customSpeak:
             spk_id = "中文女"
 
         joblist = cosyvoice.frontend.text_normalize_stream(text,True)
@@ -130,7 +133,7 @@ def sft_post():
                 print("流式0")
                 tts_speeches = []
                 model_input = cosyvoice.frontend.frontend_sft(i, spk_id)
-                if new:
+                if customSpeak:
                     # 加载数据
                     newspk = torch.load(f'./voices/{speaker}.pt')
 
@@ -176,12 +179,12 @@ def sft_post():
         return response
 
 
-@app.route("/", methods=['GET'])
+@app.route("/generate_audio", methods=['GET'])
 def sft_get():
 
     text = request.args.get('text')
     speaker = request.args.get('speaker')
-    new = request.args.get('new',0)
+    customSpeak = request.args.get('customerSpeak',0)
     streaming = request.args.get('streaming',0)
     speed = request.args.get('speed',1.0)
     speed = float(speed)
@@ -196,7 +199,7 @@ def sft_get():
     if streaming == 0:
 
         start = time.process_time()
-        if not new:
+        if not customSpeak:
             output = cosyvoice.inference_sft(text,speaker,"无")
         else:
             output = cosyvoice.inference_sft(text,speaker,speaker)
@@ -225,7 +228,7 @@ def sft_get():
 
         spk_id = speaker
 
-        if new:
+        if customSpeak:
             spk_id = "中文女"
 
         joblist = cosyvoice.frontend.text_normalize_stream(text, split=True)
@@ -237,7 +240,7 @@ def sft_get():
                 print("流式0")
                 tts_speeches = []
                 model_input = cosyvoice.frontend.frontend_sft(i, spk_id)
-                if new:
+                if customSpeak:
                     # 加载数据
                     newspk = torch.load(f'./voices/{speaker}.pt')
 
@@ -284,11 +287,6 @@ def sft_get():
         
         # return Response(generate(), mimetype='audio/x-wav')
 
-                
-
-
-
-
 
 @app.route("/tts_to_audio/", methods=['POST'])
 def tts_to_audio():
@@ -299,7 +297,7 @@ def tts_to_audio():
 
     text = question_data.get('text')
     speaker = speaker_config.speaker
-    new = speaker_config.new
+    customSpeak = speaker_config.customSpeak
 
     speed = speaker_config.speed
     
@@ -311,7 +309,7 @@ def tts_to_audio():
         return {"error": "角色名不能为空"}, 400
 
     start = time.process_time()
-    if not new:
+    if not customSpeak:
         output = cosyvoice.inference_sft(text,speaker,"无")
     else:
         output = cosyvoice.inference_sft(text,speaker,speaker)
@@ -335,26 +333,81 @@ def tts_to_audio():
     return Response(buffer.read(), mimetype="audio/wav")
 
 
-
-@app.route("/speakers", methods=['GET'])
-def speakers():
-
-    voices = []
-
-    for x in default_voices:
-        voices.append({"name":x,"voice_id":x})
-
-    for name in os.listdir("voices"):
-        name = name.replace(".pt","")
-        voices.append({"name":name,"voice_id":name})
-
+@app.route("/custom_spk", methods=['GET'])
+def custom_spk():
+    spk_new = ["无"]
+    for name in os.listdir("./voices/"):
+        # print(name.replace(".pt",""))
+        spk_new.append(name.replace(".pt",""))
     response = app.response_class(
-        response=json.dumps(voices),
+        response=json.dumps(spk_new),
         status=200,
         mimetype='application/json'
     )
     return response
 
+@app.route("/speakers", methods=['GET'])
+def speakers():
+
+    response = app.response_class(
+        response=json.dumps([{"name":"default","vid":1}]),
+        status=200,
+        mimetype='application/json'
+    )
+    return response
+
+@app.route("/default_spk",methods=['GET'])
+def default_spk():
+    response = app.response_class(
+        response=json.dumps(cosyvoice.list_avaliable_spks()),
+        status=200,
+        mimetype='application/json'
+    )
+    return response
+
+
+@app.route("/clone", methods=['POST'])
+def clone():
+    question_data = request.get_json()
+
+    tts_text = "我是通义实验室语音团队全新推出的生成式语音大模型，提供舒适自然的语音合成能力。"
+    prompt_wav = question_data.get('prompt_wav')
+    name = question_data.get('name')
+
+    seed = 0
+    prompt_text = "创新被定义为带来新想法、新方法、新产品、新服务或新解决方案的过程，从而产生重大的积极影响和价值。"
+
+    logging.info('get zero_shot inference request')
+    prompt_speech_16k = postprocess(load_wav(prompt_wav, prompt_sr))
+    set_all_random_seed(seed)
+    output = cosyvoice.inference_zero_shot(tts_text, prompt_text, prompt_speech_16k)
+
+    shutil.copyfile("./output.pt",f"./voices/{name}.pt")
+    response = app.response_class(
+        response=json.dumps({"result":"success"}),
+        status=200,
+        mimetype='application/json'
+    )
+    return response
+
+
+max_val = 0.8
+def postprocess(speech, top_db=60, hop_length=220, win_length=440):
+    speech, _ = librosa.effects.trim(
+        speech, top_db=top_db,
+        frame_length=win_length,
+        hop_length=hop_length
+    )
+    if speech.abs().max() > max_val:
+        speech = speech / speech.abs().max() * max_val
+    speech = torch.concat([speech, torch.zeros(1, int(target_sr * 0.2))], dim=1)
+    return speech
+
+def set_all_random_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
 
 @app.route("/speakers_list", methods=['GET'])
 def speakers_list():
@@ -365,12 +418,10 @@ def speakers_list():
         mimetype='application/json'
     )
     return response
-
-
-@app.route('/file/<filename>')
-def uploaded_file(filename):
-    return send_from_directory("音频输出", filename)
     
 
 if __name__ == "__main__":
+    prompt_sr, target_sr = 16000, 22050
+    default_data = np.zeros(target_sr)
+
     app.run(host='0.0.0.0', port=9880)
